@@ -396,107 +396,6 @@
   }
 
   var lastBrowserHit = 0;
-  var bridgeWin = null;
-  var bridgeWait = {};
-  var bridgeSeq = 0;
-  var BRIDGE_URL = "http://vps5.eas-x.com:13050/ai-bridge.html";
-
-  function needBridge() {
-    var base = "";
-    try {
-      base = window.spBase && typeof window.spBase.apiBase === "function" ? window.spBase.apiBase() : "";
-    } catch (e) {}
-    if (base) return false;
-    var onCdn = false;
-    try {
-      onCdn = !!(window.spBase && ((window.spBase.isCdn && window.spBase.isCdn()) || (window.spBase.isPages && window.spBase.isPages())));
-    } catch (e2) {}
-    return onCdn && String(location.protocol || "") === "https:";
-  }
-
-  function bridgeAlive() {
-    try {
-      return !!(bridgeWin && !bridgeWin.closed);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function openBridge() {
-    if (bridgeAlive()) return bridgeWin;
-    try {
-      bridgeWin = window.open(BRIDGE_URL, "kryAiBridge", "popup=yes,width=320,height=180,left=40,top=40");
-    } catch (e) {
-      bridgeWin = null;
-    }
-    return bridgeWin;
-  }
-
-  function bridgeChat(payloadMsgs) {
-    return new Promise(function (resolve) {
-      var win = openBridge();
-      if (!win) {
-        resolve(null);
-        return;
-      }
-      var id = "b" + ++bridgeSeq + "_" + Date.now().toString(36);
-      var done = false;
-      function finish(out) {
-        if (done) return;
-        done = true;
-        try {
-          delete bridgeWait[id];
-        } catch (e) {}
-        resolve(out);
-      }
-      bridgeWait[id] = finish;
-      var body = {
-        provider: "krying",
-        model: model,
-        messages: payloadMsgs.slice(-20).map(function (m) {
-          return { role: m.role, content: m.content };
-        }),
-      };
-      var n = 0;
-      var iv = setInterval(function () {
-        n += 1;
-        if (done) {
-          clearInterval(iv);
-          return;
-        }
-        if (!bridgeAlive()) {
-          clearInterval(iv);
-          finish(null);
-          return;
-        }
-        try {
-          win.postMessage({ t: "kry-ai", op: "chat", id: id, body: body }, "http://vps5.eas-x.com:13050");
-        } catch (e2) {
-          clearInterval(iv);
-          finish(null);
-          return;
-        }
-        if (n >= 50) {
-          clearInterval(iv);
-          if (!done) finish(null);
-        }
-      }, 500);
-      setTimeout(function () {
-        if (!done) finish(null);
-      }, 55000);
-    });
-  }
-
-  window.addEventListener("message", function (ev) {
-    var d = ev.data;
-    if (!d || d.t !== "kry-ai") return;
-    var orig = String(ev.origin || "");
-    if (orig.indexOf("vps5.eas-x.com") === -1 && orig.indexOf("127.0.0.1") === -1 && orig.indexOf("localhost") === -1) return;
-    if (d.op === "ready" || d.op === "pong") return;
-    if (d.op === "chat-ok" && d.id && bridgeWait[d.id]) {
-      bridgeWait[d.id](d.out || null);
-    }
-  });
 
   function packHit(reply, t0, ttft, tag, msgs) {
     return {
@@ -649,31 +548,17 @@
   }
 
   function runChat(payloadMsgs) {
-    function viaBrowser(prev) {
-      return browserChat(payloadMsgs).then(function (fb) {
-        if (fb && fb.ok && fb.data && fb.data.reply && !trashTxt(fb.data.reply)) return fb;
-        if (prev && prev.status) return prev;
-        return fb || prev || { ok: false, status: 0, data: {} };
-      });
-    }
-    if (needBridge()) {
-      openBridge();
-      return bridgeChat(payloadMsgs).then(function (br) {
-        if (br && br.ok && br.data && br.data.reply && !trashTxt(br.data.reply)) return br;
-        try {
-          if (bridgeWin && !bridgeWin.closed) bridgeWin.close();
-        } catch (e3) {}
-        bridgeWin = null;
-        return viaBrowser(br);
-      });
-    }
     return apiChat(payloadMsgs)
       .catch(function () {
         return { ok: false, status: 0, data: { clientFallback: true } };
       })
       .then(function (out) {
         if (out && out.ok && out.data && out.data.reply && !trashTxt(out.data.reply)) return out;
-        return viaBrowser(out);
+        return browserChat(payloadMsgs).then(function (fb) {
+          if (fb && fb.ok && fb.data && fb.data.reply && !trashTxt(fb.data.reply)) return fb;
+          if (out && out.status) return out;
+          return fb || out || { ok: false, status: 0, data: {} };
+        });
       });
   }
 
@@ -688,7 +573,6 @@
     if (!activeId) activeId = yeet();
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
-    if (needBridge()) openBridge();
     status("thinking…", true);
     messages.push({ role: "user", content: text });
     paintLog();
@@ -743,7 +627,6 @@
     if (!keep.length || keep[keep.length - 1].role !== "user") return;
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
-    if (needBridge()) openBridge();
     status("thinking…", true);
     messages = keep;
     paintLog();
@@ -804,11 +687,18 @@
   }
 
   function shareHref() {
-    var href = "/ai-share.html?v=8&t=" + Date.now();
+    var tip = "v=9&t=" + Date.now();
     try {
-      href = new URL(href, window.location.origin).toString();
-    } catch (e) {}
-    return href;
+      if (window.spBase && typeof window.spBase.assetUrl === "function") {
+        var u = String(window.spBase.assetUrl("ai-share.html") || "");
+        if (u) return u + (u.indexOf("?") >= 0 ? "&" : "?") + tip;
+      }
+    } catch (e0) {}
+    try {
+      return new URL("ai-share.html?" + tip, window.location.href).toString();
+    } catch (e1) {
+      return "ai-share.html?" + tip;
+    }
   }
 
   function openSharePopup() {
@@ -830,8 +720,12 @@
     shareWin = window.open(href, "kryAiShare", feats);
     if (shareWin) {
       try {
-        shareWin.location.href = href;
-      } catch (e) {}
+        shareWin.location.replace(href);
+      } catch (e) {
+        try {
+          shareWin.location.href = href;
+        } catch (e2) {}
+      }
     }
     return shareWin;
   }
@@ -890,31 +784,6 @@
       }, 1200);
     }
 
-    if (window.documentPictureInPicture && typeof window.documentPictureInPicture.requestWindow === "function") {
-      window.documentPictureInPicture
-        .requestWindow({ width: 380, height: 620 })
-        .then(function (pip) {
-          try {
-            pip.document.documentElement.style.height = "100%";
-            pip.document.body.style.cssText = "margin:0;height:100%;overflow:hidden;background:#07090c;";
-            var frame = pip.document.createElement("iframe");
-            frame.src = shareHref();
-            frame.setAttribute("allow", "display-capture");
-            frame.style.cssText = "border:0;width:100%;height:100%;display:block;";
-            pip.document.body.appendChild(frame);
-            frame.onload = function () {
-              try {
-                if (frame.contentWindow) keepPushing(frame.contentWindow, stream);
-              } catch (e4) {}
-            };
-          } catch (e5) {}
-          finish(pip);
-        })
-        .catch(function () {
-          finish(openSharePopup());
-        });
-      return;
-    }
     finish(openSharePopup());
   }
 
