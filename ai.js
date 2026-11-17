@@ -660,6 +660,10 @@
       openBridge();
       return bridgeChat(payloadMsgs).then(function (br) {
         if (br && br.ok && br.data && br.data.reply && !trashTxt(br.data.reply)) return br;
+        try {
+          if (bridgeWin && !bridgeWin.closed) bridgeWin.close();
+        } catch (e3) {}
+        bridgeWin = null;
         return viaBrowser(br);
       });
     }
