@@ -328,14 +328,46 @@
       return String(c || "").trim();
     }
     if (json && json.reply) return String(json.reply).trim();
-    if (text && text.charAt(0) !== "{") return String(text).trim();
+    if (text && text.charAt(0) !== "{" && text.charAt(0) !== "<") return String(text).trim();
     return "";
   }
 
+  function trashTxt(t) {
+    var s = String(t || "").trim();
+    if (!s) return true;
+    if (s.length < 220 && /rate.?limit|too many requests|\b429\b|\b402\b|payment required|error code|upstream busy|ECONN|ETIMEDOUT/i.test(s))
+      return true;
+    if (/^error\b/i.test(s) && s.length < 140) return true;
+    if (/^<!DOCTYPE|^<html/i.test(s)) return true;
+    return false;
+  }
+
+  function nap(ms) {
+    return new Promise(function (ok) {
+      setTimeout(ok, ms || 0);
+    });
+  }
+
   function apiChat(payloadMsgs) {
-    return fetch("/api/ai/chat", {
+    var base = "";
+    try {
+      base = window.spBase && typeof window.spBase.apiBase === "function" ? window.spBase.apiBase() : "";
+    } catch (e0) {}
+    var onCdn = false;
+    try {
+      onCdn = !!(window.spBase && window.spBase.isCdn && window.spBase.isCdn());
+    } catch (e1) {}
+    if (onCdn && !base) {
+      return Promise.resolve({ ok: false, status: 0, data: { clientFallback: true } });
+    }
+    var url =
+      window.spBase && typeof window.spBase.apiUrl === "function"
+        ? window.spBase.apiUrl("/api/ai/chat")
+        : "/api/ai/chat";
+    return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: String(url).indexOf("http") === 0 ? "omit" : "same-origin",
       body: JSON.stringify({
         provider: "krying",
         model: model,
@@ -346,10 +378,10 @@
     }).then(function (res) {
       return res.json().then(
         function (data) {
-          return { ok: res.ok, status: res.status, data: data };
+          return { ok: res.ok, status: res.status, data: data || {} };
         },
         function () {
-          return { ok: false, status: res.status, data: { error: "bad response" } };
+          return { ok: false, status: res.status, data: { clientFallback: true } };
         }
       );
     });
@@ -363,62 +395,282 @@
     return Math.max(1, Math.round(n / 4));
   }
 
+  var lastBrowserHit = 0;
+  var bridgeWin = null;
+  var bridgeWait = {};
+  var bridgeSeq = 0;
+  var BRIDGE_URL = "http://vps5.eas-x.com:13050/ai-bridge.html";
+
+  function needBridge() {
+    var base = "";
+    try {
+      base = window.spBase && typeof window.spBase.apiBase === "function" ? window.spBase.apiBase() : "";
+    } catch (e) {}
+    if (base) return false;
+    var onCdn = false;
+    try {
+      onCdn = !!(window.spBase && ((window.spBase.isCdn && window.spBase.isCdn()) || (window.spBase.isPages && window.spBase.isPages())));
+    } catch (e2) {}
+    return onCdn && String(location.protocol || "") === "https:";
+  }
+
+  function bridgeAlive() {
+    try {
+      return !!(bridgeWin && !bridgeWin.closed);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function openBridge() {
+    if (bridgeAlive()) return bridgeWin;
+    try {
+      bridgeWin = window.open(BRIDGE_URL, "kryAiBridge", "popup=yes,width=320,height=180,left=40,top=40");
+    } catch (e) {
+      bridgeWin = null;
+    }
+    return bridgeWin;
+  }
+
+  function bridgeChat(payloadMsgs) {
+    return new Promise(function (resolve) {
+      var win = openBridge();
+      if (!win) {
+        resolve(null);
+        return;
+      }
+      var id = "b" + ++bridgeSeq + "_" + Date.now().toString(36);
+      var done = false;
+      function finish(out) {
+        if (done) return;
+        done = true;
+        try {
+          delete bridgeWait[id];
+        } catch (e) {}
+        resolve(out);
+      }
+      bridgeWait[id] = finish;
+      var body = {
+        provider: "krying",
+        model: model,
+        messages: payloadMsgs.slice(-20).map(function (m) {
+          return { role: m.role, content: m.content };
+        }),
+      };
+      var n = 0;
+      var iv = setInterval(function () {
+        n += 1;
+        if (done) {
+          clearInterval(iv);
+          return;
+        }
+        if (!bridgeAlive()) {
+          clearInterval(iv);
+          finish(null);
+          return;
+        }
+        try {
+          win.postMessage({ t: "kry-ai", op: "chat", id: id, body: body }, "http://vps5.eas-x.com:13050");
+        } catch (e2) {
+          clearInterval(iv);
+          finish(null);
+          return;
+        }
+        if (n >= 50) {
+          clearInterval(iv);
+          if (!done) finish(null);
+        }
+      }, 500);
+      setTimeout(function () {
+        if (!done) finish(null);
+      }, 55000);
+    });
+  }
+
+  window.addEventListener("message", function (ev) {
+    var d = ev.data;
+    if (!d || d.t !== "kry-ai") return;
+    var orig = String(ev.origin || "");
+    if (orig.indexOf("vps5.eas-x.com") === -1 && orig.indexOf("127.0.0.1") === -1 && orig.indexOf("localhost") === -1) return;
+    if (d.op === "ready" || d.op === "pong") return;
+    if (d.op === "chat-ok" && d.id && bridgeWait[d.id]) {
+      bridgeWait[d.id](d.out || null);
+    }
+  });
+
+  function packHit(reply, t0, ttft, tag, msgs) {
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        reply: reply,
+        reasoning: "",
+        meta: {
+          backend: tag || "browser",
+          elapsedMs: Date.now() - t0,
+          ttftMs: ttft || Date.now() - t0,
+          tokens: approxTok(msgs, reply),
+        },
+      },
+    };
+  }
+
+  function yankJson(res) {
+    return res.text().then(function (text) {
+      var json = null;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {}
+      return { res: res, text: text, json: json };
+    });
+  }
+
   function browserChat(payloadMsgs) {
     var t0 = Date.now();
     var ttft = 0;
-    return fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        model: "openai",
-        messages: payloadMsgs.slice(-12).map(function (m) {
-          return { role: m.role, content: String(m.content || "").slice(0, 4000) };
-        }),
-        temperature: 0.7,
-      }),
-    }).then(function (res) {
-      if (!ttft) ttft = Date.now() - t0;
-      return res.text().then(function (text) {
-        var json = null;
-        try {
-          json = JSON.parse(text);
-        } catch (e) {}
-        var reply = extractReply(json, text);
-        var usage = json && json.usage ? json.usage : null;
-        var tokens =
-          (usage &&
-            (Number(usage.total_tokens || 0) ||
-              Number(usage.completion_tokens || 0) + Number(usage.prompt_tokens || 0))) ||
-          approxTok(payloadMsgs, reply);
-        return {
-          ok: !!(res.ok && reply),
-          status: res.status,
-          data: {
-            reply: reply || "",
-            reasoning: "",
-            meta: {
-              backend: "browser-pollinations",
-              elapsedMs: Date.now() - t0,
-              ttftMs: ttft || Date.now() - t0,
-              tokens: tokens,
-            },
-          },
-        };
+    var slim = payloadMsgs.slice(-12).map(function (m) {
+      return { role: m.role, content: String(m.content || "").slice(0, 3500) };
+    });
+    var mods = ["openai-fast", "openai", "mistral", "deepseek", "openai-large"];
+    var last = { ok: false, status: 0, data: {} };
+
+    function waitGap() {
+      var gap = 2200 - (Date.now() - lastBrowserHit);
+      if (gap > 0) return nap(gap);
+      return Promise.resolve();
+    }
+
+    function tryPost(url, body, tag) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json, text/plain" },
+        body: JSON.stringify(body),
+      })
+        .then(function (res) {
+          if (!ttft) ttft = Date.now() - t0;
+          return yankJson(res);
+        })
+        .then(function (got) {
+          lastBrowserHit = Date.now();
+          var reply = extractReply(got.json, got.text);
+          if (got.res.ok && reply && !trashTxt(reply)) {
+            return packHit(reply, t0, ttft, tag, payloadMsgs);
+          }
+          last = {
+            ok: false,
+            status: got.res.status || 0,
+            data: { clientFallback: true },
+          };
+          if (got.res.status === 429 || got.res.status === 402) {
+            var wait = 0;
+            try {
+              wait = Number(got.res.headers.get("Retry-After") || 0);
+            } catch (e2) {}
+            return nap(Math.min(6000, Math.max(900, (wait || 2) * 1000))).then(function () {
+              return null;
+            });
+          }
+          return null;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+
+    function tryGet(prompt) {
+      var q = encodeURIComponent(String(prompt || "hi").slice(0, 900));
+      return fetch("https://text.pollinations.ai/" + q + "?model=openai-fast", {
+        method: "GET",
+        headers: { Accept: "text/plain, application/json" },
+      })
+        .then(function (res) {
+          if (!ttft) ttft = Date.now() - t0;
+          return yankJson(res);
+        })
+        .then(function (got) {
+          lastBrowserHit = Date.now();
+          var reply = extractReply(got.json, got.text);
+          if (got.res.ok && reply && !trashTxt(reply)) {
+            return packHit(reply, t0, ttft, "browser-get", payloadMsgs);
+          }
+          last = { ok: false, status: got.res.status || 0, data: { clientFallback: true } };
+          return null;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+
+    function lastUser() {
+      for (var i = slim.length - 1; i >= 0; i--) {
+        if (slim[i] && slim[i].role === "user") return String(slim[i].content || "");
+      }
+      return "hi";
+    }
+
+    return waitGap().then(function () {
+      var chain = Promise.resolve(null);
+      for (var i = 0; i < mods.length; i++) {
+        (function (mod) {
+          chain = chain.then(function (hit) {
+            if (hit) return hit;
+            return tryPost(
+              "https://text.pollinations.ai/openai",
+              { model: mod, messages: slim, temperature: 0.6 },
+              "browser-" + mod
+            );
+          });
+        })(mods[i]);
+      }
+      chain = chain.then(function (hit) {
+        if (hit) return hit;
+        return tryPost(
+          "https://gen.pollinations.ai/v1/chat/completions",
+          { model: "openai", messages: slim, temperature: 0.5, max_tokens: 900 },
+          "browser-gen"
+        );
+      });
+      chain = chain.then(function (hit) {
+        if (hit) return hit;
+        return tryPost(
+          "https://text.pollinations.ai/",
+          { model: "openai-fast", messages: slim },
+          "browser-plain"
+        );
+      });
+      chain = chain.then(function (hit) {
+        if (hit) return hit;
+        return tryGet(lastUser());
+      });
+      return chain.then(function (hit) {
+        return hit || last;
       });
     });
   }
 
   function runChat(payloadMsgs) {
-    var cdn = window.spBase && window.spBase.isCdn && window.spBase.isCdn();
-    if (cdn) return browserChat(payloadMsgs);
-    return apiChat(payloadMsgs).then(function (out) {
-      if (out.ok && out.data && out.data.reply) return out;
-      if (out.status === 429 && out.data && !out.data.clientFallback) return out;
-      return browserChat(payloadMsgs).then(function (fallback) {
-        if (fallback.ok && fallback.data && fallback.data.reply) return fallback;
-        return out;
+    function viaBrowser(prev) {
+      return browserChat(payloadMsgs).then(function (fb) {
+        if (fb && fb.ok && fb.data && fb.data.reply && !trashTxt(fb.data.reply)) return fb;
+        if (prev && prev.status) return prev;
+        return fb || prev || { ok: false, status: 0, data: {} };
       });
-    });
+    }
+    if (needBridge()) {
+      openBridge();
+      return bridgeChat(payloadMsgs).then(function (br) {
+        if (br && br.ok && br.data && br.data.reply && !trashTxt(br.data.reply)) return br;
+        return viaBrowser(br);
+      });
+    }
+    return apiChat(payloadMsgs)
+      .catch(function () {
+        return { ok: false, status: 0, data: { clientFallback: true } };
+      })
+      .then(function (out) {
+        if (out && out.ok && out.data && out.data.reply && !trashTxt(out.data.reply)) return out;
+        return viaBrowser(out);
+      });
   }
 
   function send() {
@@ -432,6 +684,7 @@
     if (!activeId) activeId = yeet();
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
+    if (needBridge()) openBridge();
     status("thinking…", true);
     messages.push({ role: "user", content: text });
     paintLog();
@@ -439,19 +692,23 @@
     inputEl.value = "";
     runChat(messages)
       .then(function (out) {
-        if (!out.ok || !out.data || !out.data.reply) {
+        var rep = out && out.data ? String(out.data.reply || "") : "";
+        if (!out || !out.ok || !rep || trashTxt(rep)) {
           messages.push({
             role: "assistant",
-            content: "something went wrong, report it to the website manager pls&ty :)",
+            content:
+              out && out.status === 429
+                ? "upstream busy — try again in a sec"
+                : "something went wrong, report it to the website manager pls&ty :)",
             reasoning: "",
             meta: null,
           });
         } else {
           messages.push({
             role: "assistant",
-            content: String(out.data.reply),
-            reasoning: String(out.data.reasoning || ""),
-            meta: out.data.meta || null,
+            content: rep,
+            reasoning: String((out.data && out.data.reasoning) || ""),
+            meta: (out.data && out.data.meta) || null,
           });
         }
         paintLog();
@@ -482,24 +739,29 @@
     if (!keep.length || keep[keep.length - 1].role !== "user") return;
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
+    if (needBridge()) openBridge();
     status("thinking…", true);
     messages = keep;
     paintLog();
     runChat(messages)
       .then(function (out) {
-        if (!out.ok || !out.data || !out.data.reply) {
+        var rep = out && out.data ? String(out.data.reply || "") : "";
+        if (!out || !out.ok || !rep || trashTxt(rep)) {
           messages.push({
             role: "assistant",
-            content: "something went wrong, report it to the website manager pls&ty :)",
+            content:
+              out && out.status === 429
+                ? "upstream busy — try again in a sec"
+                : "something went wrong, report it to the website manager pls&ty :)",
             reasoning: "",
             meta: null,
           });
         } else {
           messages.push({
             role: "assistant",
-            content: String(out.data.reply),
-            reasoning: String(out.data.reasoning || ""),
-            meta: out.data.meta || null,
+            content: rep,
+            reasoning: String((out.data && out.data.reasoning) || ""),
+            meta: (out.data && out.data.meta) || null,
           });
         }
         paintLog();
