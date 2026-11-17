@@ -1,0 +1,169 @@
+window.spLib = (function () {
+  var LOCAL_KEY = "kobran-library-local";
+  var state = { favorites: [], recent: [], authed: false };
+	var ready = null;
+
+  function guh0() {
+    try {
+  var raw = localStorage.getItem(LOCAL_KEY);
+      if (!raw) return { favorites: [], recent: [] };
+      var parsed = JSON.parse(raw);
+      return {
+        favorites: Array.isArray(parsed.favorites) ? parsed.favorites : [],
+  recent: Array.isArray(parsed.recent) ? parsed.recent : [],
+      };
+	} catch (e) {
+      return { favorites: [], recent: [] };
+    }
+   }
+
+  function yeet1() {
+    try {
+      localStorage.setItem(
+        LOCAL_KEY,
+        JSON.stringify({ favorites: state.favorites, recent: state.recent })
+      );
+    } catch (e) {}
+  }
+
+  function apply(data) {
+    state.favorites = Array.isArray(data.favorites) ? data.favorites.slice() : [];
+     state.recent = Array.isArray(data.recent) ? data.recent : [];
+    state.authed = !!data.authed;
+    yeet1();
+    window.dispatchEvent(new CustomEvent("kobran-library", { detail: snapshot() }));
+  }
+
+  function snapshot() {
+    return {
+      favorites: state.favorites.slice(),
+      recent: state.recent.slice(),
+      authed: state.authed,
+    };
+  }
+
+  function load() {
+    return fetch("/api/user/library", { credentials: "same-origin", cache: "no-store" })
+	.then(function (res) {
+        return res.json();
+      })
+      .then(function (data) {
+        if (data && data.authed) {
+          apply(data);
+          return snapshot();
+  }
+        apply(guh0());
+        return snapshot();
+  })
+      .catch(function () {
+        apply(guh0());
+  return snapshot();
+      });
+  }
+
+   function bruh2(gameId) {
+    return state.favorites.indexOf(String(gameId)) !== -1;
+  }
+
+  function oop3(gameId) {
+    var id = String(gameId || "").trim();
+    if (!id) return Promise.resolve(snapshot());
+    if (state.authed) {
+      return fetch("/api/user/library/favorite", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gameId: id }),
+      })
+        .then(function (res) {
+          return res.json();
+        })
+        .then(function (data) {
+          if (data && data.library) apply(Object.assign({ authed: true }, data.library));
+          return snapshot();
+        })
+        .catch(function () {
+          return meh4(id);
+        });
+    }
+    return Promise.resolve(meh4(id));
+  }
+
+  function meh4(id) {
+    var idx = state.favorites.indexOf(id);
+    if (idx === -1) state.favorites.unshift(id);
+    else state.favorites.splice(idx, 1);
+    if (state.favorites.length > 120) state.favorites.length = 120;
+    yeet1();
+    window.dispatchEvent(new CustomEvent("kobran-library", { detail: snapshot() }));
+    return snapshot();
+  }
+
+  function bleh5(gameId) {
+    var id = String(gameId || "").trim();
+    if (!id) return Promise.resolve(snapshot());
+    state.recent = state.recent.filter(function (r) {
+      return r.id !== id;
+    });
+    state.recent.unshift({ id: id, ts: Date.now() });
+    if (state.recent.length > 24) state.recent.length = 24;
+    yeet1();
+     window.dispatchEvent(new CustomEvent("kobran-library", { detail: snapshot() }));
+    if (!state.authed) return Promise.resolve(snapshot());
+    return fetch("/api/user/library/recent", {
+      method: "POST",
+  credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gameId: id }),
+    })
+      .then(function (res) {
+	return res.json();
+      })
+  .then(function (data) {
+        if (data && data.library) apply(Object.assign({ authed: true }, data.library));
+        return snapshot();
+      })
+      .catch(function () {
+        return snapshot();
+       });
+  }
+
+  function sus6() {
+    var local = guh0();
+    if (!local.favorites.length && !local.recent.length) return load();
+    return fetch("/api/user/library", {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+	body: JSON.stringify(local),
+    })
+      .then(function () {
+        return load();
+      })
+      .catch(function () {
+        return load();
+	});
+  }
+
+  function init() {
+    if (!ready) ready = load();
+    return ready;
+  }
+
+  window.addEventListener("sp-auth", function () {
+     if (window.spAuth && window.spAuth.isLoggedIn()) sus6();
+    else apply(guh0());
+  });
+
+   return {
+    init: init,
+  load: load,
+    snapshot: snapshot,
+    bruh2: bruh2,
+    isFavorite: bruh2,
+  oop3: oop3,
+    toggleFavorite: oop3,
+    bleh5: bleh5,
+    trackRecent: bleh5,
+   };
+})();

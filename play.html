@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>Game</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="frame" title="Game" allow="fullscreen; autoplay; gamepad; microphone; camera" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe>
+  <script>    (function () {
+      var frame = document.getElementById("frame");
+      var params = new URLSearchParams(location.search);
+      var queue = [];
+	var attempt = 0;
+
+      function guh0(url) {
+        var u = String(url || "").toLowerCase();
+	if (/cdn\.jsdelivr\.net\/gh\/3kh0\/3kh0-lite/i.test(u)) return true;
+         if (/raw\.githack\.com\/3kh0\/3kh0-lite/i.test(u)) return true;
+        if (/raw\.githubusercontent\.com\/3kh0\/3kh0-lite/i.test(u)) return true;
+        return false;
+  }
+
+      function yeet1(raw) {
+        var u = String(raw || "").trim();
+        if (!u || guh0(u)) return;
+        if (queue.indexOf(u) === -1) queue.push(u);
+      }
+
+      function bruh2(raw) {
+        var u = String(raw || "").trim();
+         if (!u) return "";
+        var q = u.indexOf("?");
+        var path = q >= 0 ? u.slice(0, q) : u;
+         var query = q >= 0 ? u.slice(q) : "";
+        return (
+          "/" +
+          path
+            .replace(/^\/+/, "")
+            .split("/")
+  .map(function (part) {
+	return encodeURIComponent(part);
+            })
+            .join("/") +
+          query
+        );
+      }
+
+      function onCdn() {
+        try {
+          var h = String(location.hostname || "");
+          return /unpkg\.com$/i.test(h) || /jsdelivr\.net$/i.test(h) || /\/krying@/i.test(location.pathname || "");
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function oop3(raw) {
+        var u = String(raw || "").trim();
+        if (!u) return "";
+        if (/^\/api\/game-frame\?/i.test(u)) return onCdn() ? "" : u;
+        if (/^https?:\/\//i.test(u)) {
+          if (guh0(u)) return "";
+          if (onCdn()) return u;
+          return "/api/game-frame?u=" + encodeURIComponent(u);
+        }
+        return onCdn() ? u : bruh2(u);
+      }
+
+      function meh4() {
+        try {
+          var doc = frame.contentDocument;
+          if (!doc || !doc.body) return false;
+          var text = String(doc.body.innerText || doc.body.textContent || "").trim();
+          if (/^cannot get\b/i.test(text)) return true;
+          if (/^404\b/i.test(text) && text.length < 120) return true;
+          if (/fetch_failed|bad_url/i.test(text) && text.length < 120) return true;
+        } catch (e) {}
+        return false;
+      }
+
+      function bleh5() {
+        if (!frame || attempt >= queue.length) return;
+        var url = oop3(queue[attempt]);
+        attempt++;
+        if (!url) {
+          bleh5();
+          return;
+        }
+        frame.onload = function () {
+	if (meh4()) bleh5();
+  };
+        frame.onerror = function () {
+          bleh5();
+        };
+        frame.src = url;
+      }
+
+      function sus6() {
+        queue = queue.filter(function (u) {
+          return !guh0(u);
+         });
+  if (!queue.length) return;
+        attempt = 0;
+  bleh5();
+      }
+
+      function goof7(gameId) {
+        if (onCdn()) {
+          fetch("games.json", { cache: "no-store" })
+            .then(function (res) {
+              if (!res.ok) throw new Error("bad");
+              return res.json();
+            })
+            .then(function (data) {
+              var list = Array.isArray(data) ? data : data && data.games ? data.games : [];
+              var hit = list.find(function (g) {
+                return g && String(g.id) === String(gameId);
+              });
+              if (hit && hit.path) yeet1(hit.path);
+              sus6();
+            })
+            .catch(function () {});
+          return;
+        }
+        fetch("/api/game-launch/" + encodeURIComponent(gameId), { credentials: "same-origin" })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              if (!res.ok) throw new Error("launch failed");
+              return data;
+            });
+          })
+          .then(function (data) {
+            (data.targets || []).forEach(function (t) {
+              yeet1(t.url || t);
+            });
+            if (!queue.length && data.path) yeet1(data.path);
+            sus6();
+          })
+          .catch(function () {});
+      }
+
+      var gameId = String(params.get("id") || "").trim();
+      if (gameId) {
+        goof7(gameId);
+        return;
+      }
+
+      var single = params.get("src") || params.get("p") || "";
+      if (single) yeet1(single);
+
+      var multi = params.get("targets") || params.get("t") || "";
+      if (multi) {
+	multi.split("|").forEach(function (part) {
+          try {
+            yeet1(decodeURIComponent(part));
+          } catch (e) {
+            yeet1(part);
+          }
+        });
+       }
+
+      sus6();
+    })();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "Kobran",
+  "short_name": "Kobran",
+  "description": "Unblocked games, movies, music, and more in your browser.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/assets/kobran-logo.webp",
+      "sizes": "755x755",
+      "type": "image/webp",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/kobran-logo.webp",
+      "sizes": "755x755",
+      "type": "image/webp",
+      "purpose": "maskable"
+    }
+  ]
+}
