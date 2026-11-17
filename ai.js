@@ -687,7 +687,7 @@
   }
 
   function shareHref() {
-    var tip = "v=9&t=" + Date.now();
+    var tip = "v=10&t=" + Date.now();
     try {
       if (window.spBase && typeof window.spBase.assetUrl === "function") {
         var u = String(window.spBase.assetUrl("ai-share.html") || "");

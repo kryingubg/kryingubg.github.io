@@ -206,14 +206,29 @@
       });
   }
 
+  function canHitApi() {
+    try {
+      var op = findOpener();
+      var base = "";
+      if (op && op.spBase && typeof op.spBase.apiBase === "function") base = op.spBase.apiBase() || "";
+      if (base) return true;
+    } catch (e0) {}
+    var h = String(location.hostname || "").toLowerCase();
+    if (h === "localhost" || h === "127.0.0.1") return true;
+    if (/eas-x\.com$/i.test(h) || /flashhub\.net$/i.test(h) || /onrender\.com$/i.test(h)) return true;
+    if (String(location.protocol || "") === "http:" && !/\.github\.io$/i.test(h)) return true;
+    return false;
+  }
+
   function postServer(messages) {
+    if (!canHitApi()) {
+      return Promise.resolve({ ok: false, status: 0, data: { clientFallback: true } });
+    }
     var url = "/api/ai/chat";
     try {
-      if (window.opener && window.opener.spBase && typeof window.opener.spBase.apiUrl === "function") {
-        url = window.opener.spBase.apiUrl("/api/ai/chat") || url;
-      } else if (window.spBase && typeof window.spBase.apiUrl === "function") {
-        url = window.spBase.apiUrl("/api/ai/chat") || url;
-      }
+      var op = findOpener();
+      if (op && op.spBase && typeof op.spBase.apiUrl === "function") url = op.spBase.apiUrl("/api/ai/chat") || url;
+      else if (window.spBase && typeof window.spBase.apiUrl === "function") url = window.spBase.apiUrl("/api/ai/chat") || url;
     } catch (e) {}
     return fetch(url, {
       method: "POST",
@@ -228,23 +243,100 @@
     }).then(parsePack);
   }
 
+  function nap(ms) {
+    return new Promise(function (ok) {
+      setTimeout(ok, ms || 0);
+    });
+  }
+
+  function trashBit(t) {
+    var s = String(t || "").trim();
+    if (!s) return true;
+    if (s.length < 220 && /rate.?limit|too many|upstream busy|\b429\b|\b402\b|payment required|error code/i.test(s)) return true;
+    if (/^error\b/i.test(s) && s.length < 140) return true;
+    return false;
+  }
+
   function postBrowser(promptText) {
-    return fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        model: "openai",
-        messages: [{ role: "user", content: String(promptText || "").slice(0, 6000) }],
-        temperature: 0.5,
-      }),
-    }).then(function (res) {
-      return res.text().then(function (text) {
-        var json = null;
-        try {
-          json = JSON.parse(text);
-        } catch (e) {}
-        return { ok: res.ok, status: res.status, data: { reply: extractReply(json, text), raw: text } };
+    var tip = String(promptText || "").slice(0, 4500);
+    var mods = ["openai-fast", "openai", "mistral", "deepseek"];
+    var last = { ok: false, status: 0, data: {} };
+
+    function one(url, body) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json, text/plain" },
+        body: JSON.stringify(body),
+      })
+        .then(function (res) {
+          return res.text().then(function (text) {
+            var json = null;
+            try {
+              json = JSON.parse(text);
+            } catch (e) {}
+            var reply = extractReply(json, text);
+            if (res.ok && reply && !trashBit(reply)) {
+              return { ok: true, status: 200, data: { reply: reply } };
+            }
+            last = { ok: false, status: res.status || 0, data: {} };
+            if (res.status === 429 || res.status === 402) {
+              return nap(1600).then(function () {
+                return null;
+              });
+            }
+            return null;
+          });
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+
+    var chain = Promise.resolve(null);
+    mods.forEach(function (mod) {
+      chain = chain.then(function (hit) {
+        if (hit) return hit;
+        return one("https://text.pollinations.ai/openai", {
+          model: mod,
+          messages: [{ role: "user", content: tip }],
+          temperature: 0.45,
+        });
       });
+    });
+    chain = chain.then(function (hit) {
+      if (hit) return hit;
+      return one("https://gen.pollinations.ai/v1/chat/completions", {
+        model: "openai",
+        messages: [{ role: "user", content: tip }],
+        temperature: 0.45,
+        max_tokens: 700,
+      });
+    });
+    chain = chain.then(function (hit) {
+      if (hit) return hit;
+      var q = encodeURIComponent(tip.slice(0, 900));
+      return fetch("https://text.pollinations.ai/" + q + "?model=openai-fast", {
+        method: "GET",
+        headers: { Accept: "text/plain, application/json" },
+      })
+        .then(function (res) {
+          return res.text().then(function (text) {
+            var json = null;
+            try {
+              json = JSON.parse(text);
+            } catch (e2) {}
+            var reply = extractReply(json, text);
+            if (res.ok && reply && !trashBit(reply)) return { ok: true, status: 200, data: { reply: reply } };
+            last = { ok: false, status: res.status || 0, data: {} };
+            return null;
+          });
+        })
+        .catch(function () {
+          return null;
+        });
+    });
+    return chain.then(function (hit) {
+      return hit || last;
     });
   }
 
@@ -265,57 +357,66 @@
     var visionContent = [
       {
         type: "text",
-        text:
-          q +
-          "\n\nFresh screenshot of the user's shared tab/window/screen. Answer only from this frame. Keep it clear and direct.",
+        text: q + "\n\nFresh screenshot of the shared screen. Answer only from this frame.",
       },
       { type: "image_url", image_url: { url: shot } },
     ];
 
     function finish(text) {
       if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
-      addBubble("ai", text);
+      addBubble("ai", trashBit(text) ? "couldnt read that frame, try again in a sec" : text);
     }
 
-    function fail(msg) {
-      finish(msg || "something went wrong, report it to the website manager pls&ty :)");
+    function fail() {
+      finish("couldnt read that frame, try again in a sec");
     }
 
-    postServer([{ role: "user", content: visionContent }])
-      .then(function (pack) {
-        if (pack.ok && pack.data && pack.data.reply) {
-          finish(String(pack.data.reply));
-          return null;
-        }
-        if (thinking) thinking.textContent = "scanning screen text…";
-        return ocrFrame(shot).then(function (ocr) {
-          var ocrPrompt =
-            q +
-            "\n\nOCR text from the shared screen (may be messy):\n" +
-            (ocr || "(no readable text)") +
-            "\n\nAnswer from that screen text. Be clear and direct.";
+    function good(pack) {
+      return !!(pack && pack.ok && pack.data && pack.data.reply && !trashBit(pack.data.reply));
+    }
+
+    function viaOcrBrowser() {
+      if (thinking) thinking.textContent = "scanning screen text…";
+      return ocrFrame(shot).then(function (ocr) {
+        var ocrPrompt =
+          q +
+          "\n\nOCR from shared screen (messy ok):\n" +
+          (ocr || "(no readable text)") +
+          "\n\nAnswer from that. short and clear.";
+        if (canHitApi()) {
           return postServer([{ role: "user", content: ocrPrompt }]).then(function (pack2) {
-            if (pack2.ok && pack2.data && pack2.data.reply) {
+            if (good(pack2)) {
               finish(String(pack2.data.reply));
-              return null;
+              return;
             }
-            if (thinking) thinking.textContent = "retrying from your network…";
+            if (thinking) thinking.textContent = "retrying…";
             return postBrowser(ocrPrompt).then(function (pack3) {
-              if (pack3.data && pack3.data.reply) {
-                finish(String(pack3.data.reply));
-                return;
-              }
-              if (pack3.status === 402 || pack3.status === 429) {
-                fail("upstream busy — try again in a sec");
-                return;
-              }
-              fail((pack.data && pack.data.error) || (pack2.data && pack2.data.error) || "");
+              if (good(pack3)) finish(String(pack3.data.reply));
+              else fail();
             });
           });
+        }
+        if (thinking) thinking.textContent = "reading text…";
+        return postBrowser(ocrPrompt).then(function (pack3) {
+          if (good(pack3)) finish(String(pack3.data.reply));
+          else fail();
         });
-      })
+      });
+    }
+
+    var start = canHitApi()
+      ? postServer([{ role: "user", content: visionContent }]).then(function (pack) {
+          if (good(pack)) {
+            finish(String(pack.data.reply));
+            return null;
+          }
+          return viaOcrBrowser();
+        })
+      : viaOcrBrowser();
+
+    start
       .catch(function () {
-        fail("");
+        fail();
       })
       .finally(function () {
         busy = false;
